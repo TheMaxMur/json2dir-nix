@@ -1,0 +1,38 @@
+#!/bin/sh
+# Nix owns the JSON parsing, validation, traversal, and shell generation.
+set -eu
+
+if [ "$#" -ne 0 ]; then
+  printf '%s\n' 'Usage: json2dir < file.json' >&2
+  exit 1
+fi
+
+if [ -z "${JSON2DIR_EVALUATOR:-}" ]; then
+  script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+  JSON2DIR_EVALUATOR="$script_dir/cli.nix"
+fi
+
+task_tmp=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/json2dir.XXXXXXXXXX")
+trap 'rm -rf -- "$task_tmp"' 0
+trap 'exit 1' HUP INT TERM
+
+if ! (umask 077; cat > "$task_tmp/input.json"); then
+  printf '%s\n' "Error: couldn't read stdin." >&2
+  exit 1
+fi
+
+# Finish evaluation before running anything; an error never executes a partial
+# generated script. Input and output use files to avoid argument-size limits
+# and command substitution's removal of trailing newlines.
+if ! (
+  umask 077
+  JSON2DIR_INPUT="$task_tmp/input.json" \
+    "${JSON2DIR_NIX:-nix}" --extra-experimental-features nix-command \
+    eval --offline --impure --raw --file "$JSON2DIR_EVALUATOR" \
+    --apply 'f: f { jsonFile = builtins.getEnv "JSON2DIR_INPUT"; }' \
+    > "$task_tmp/tree.sh"
+); then
+  exit 1
+fi
+
+"${JSON2DIR_SHELL:-/bin/sh}" "$task_tmp/tree.sh"
